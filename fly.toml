@@ -1,0 +1,18 @@
+# fly.toml
+app = 'making-chatbot'
+primary_region = 'bom'
+
+[build]
+  # dockerfile = "Dockerfile" # Assuming this is how it's set or detected
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true # Changed from 'stop' to boolean true, which is more common
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  size = 'shared-cpu-1x' #  You can keep this if you only want to change memory
+  memory = '512mb'      # Or use memory_mb = 512

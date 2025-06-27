@@ -1,0 +1,21 @@
+# .dockerignore
+
+# Ignore the Python virtual environment
+.venv/
+
+# Ignore Git directory
+.git/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore other common files
+.DS_Store
+*.log
+# .env # If you handle secrets through Fly.io only and don't want .env in the image
+
+# Any other specific files or directories to ignore
+# e.g., large_dataset_downloads/

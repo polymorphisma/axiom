@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+sentence-transformers
+chromadb
+PyMuPDF
+groq
+python-dotenv
+langchain-text-splitters # If you prefer, or just use custom logic
