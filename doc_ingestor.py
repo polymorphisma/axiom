@@ -1,28 +1,33 @@
 # doc_ingestor.py
 import os
-import fitz
+import fitz  # PyMuPDF for PDFs
 from sentence_transformers import SentenceTransformer
 import chromadb
-from chromadb.utils import embedding_functions
-from langchain_text_splitters import RecursiveCharacterTextSplitter # Or your custom chunking
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # --- Configuration ---
 DOCS_DIR = "./docs"
 CHROMA_DATA_PATH = "./chroma_data"
-CHROMA_COLLECTION_NAME = "hr_policies"
-EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5" # Or 'sentence-transformers/all-MiniLM-L6-v2'
+CHROMA_COLLECTION_NAME = "jasper_data" # Renamed for clarity
+EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5" # A good open-source embedding model
 
-# Text splitting parameters (tune as needed)
+# Text splitting parameters
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 
-def get_pdf_text(pdf_path):
+def get_pdf_text(file_path):
     """Extracts text from a PDF file."""
-    doc = fitz.open(pdf_path)
+    doc = fitz.open(file_path)
     text = ""
     for page_num in range(len(doc)):
         page = doc.load_page(page_num)
         text += page.get_text()
+    return text
+
+def get_txt_text(file_path):
+    """Reads text from a TXT file."""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        text = f.read()
     return text
 
 def clean_text(text):
@@ -32,37 +37,35 @@ def clean_text(text):
     return text
 
 def main():
-    print("Starting document ingestion...")
+    print("🚀 Starting document ingestion process...")
 
-    # --- Initialize ChromaDB Client ---
-    # Using persistent client. Data will be stored in CHROMA_DATA_PATH
+    # --- 1. Initialize ChromaDB Client ---
     client = chromadb.PersistentClient(path=CHROMA_DATA_PATH)
 
-    # --- Initialize Sentence Transformer Model ---
-    # We'll use HuggingFaceEmbeddingFunction for on-the-fly embedding during collection creation/query
-    # For ingestion, we can also pre-compute embeddings if preferred for more control.
-    # Here, let's pre-compute.
+    # --- 2. Initialize Sentence Transformer Model ---
     print(f"Loading embedding model: {EMBEDDING_MODEL_NAME}...")
     embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    print("Embedding model loaded.")
+    print("✅ Embedding model loaded.")
 
-    # --- Get or Create ChromaDB Collection ---
-    # Note: If you use default embedding function of Chroma, you don't need to pass embeddings explicitly.
-    # But since we are using specific sentence-transformer locally, we generate embeddings ourselves.
-    # For a persistent client, you might want to delete the collection if you're re-ingesting
-    # or handle it more gracefully. For MVP, let's try get_or_create.
+    # --- 3. Clean and Recreate ChromaDB Collection ---
+    # Delete the old collection if it exists to ensure a fresh start
     try:
-        collection = client.get_or_create_collection(
-            name=CHROMA_COLLECTION_NAME
-            # embedding_function is not directly used here if we provide embeddings ourselves,
-            # but good to be aware of if ChromaDB were to generate them.
-        )
-        print(f"Using collection: {CHROMA_COLLECTION_NAME}")
+        if CHROMA_COLLECTION_NAME in [c.name for c in client.list_collections()]:
+            print(f"Collection '{CHROMA_COLLECTION_NAME}' already exists. Deleting it.")
+            client.delete_collection(name=CHROMA_COLLECTION_NAME)
     except Exception as e:
-        print(f"Error getting or creating collection: {e}")
+        print(f"Error deleting collection: {e}")
+        return # Exit if we can't delete the collection
+
+    # Create a new collection
+    try:
+        collection = client.create_collection(name=CHROMA_COLLECTION_NAME)
+        print(f"✅ Collection '{CHROMA_COLLECTION_NAME}' created successfully.")
+    except Exception as e:
+        print(f"Error creating collection: {e}")
         return
 
-    # --- Initialize Text Splitter ---
+    # --- 4. Initialize Text Splitter ---
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
@@ -70,68 +73,66 @@ def main():
         is_separator_regex=False,
     )
 
-    processed_files = 0
-    total_chunks = 0
+    # --- 5. Process Documents in DOCS_DIR ---
+    all_chunks = []
+    all_metadatas = []
+    all_chunk_ids = []
 
-    # --- Process PDF Documents ---
     for filename in os.listdir(DOCS_DIR):
+        file_path = os.path.join(DOCS_DIR, filename)
+        raw_text = ""
+        
+        # Check file type and use the appropriate extractor
         if filename.lower().endswith(".pdf"):
-            pdf_path = os.path.join(DOCS_DIR, filename)
-            print(f"\nProcessing document: {pdf_path}...")
+            print(f"\n📄 Processing PDF: {filename}...")
+            raw_text = get_pdf_text(file_path)
+        elif filename.lower().endswith(".txt"):
+            print(f"\n📄 Processing TXT: {filename}...")
+            raw_text = get_txt_text(file_path)
+        else:
+            print(f"\n⚠️ Skipping unsupported file type: {filename}")
+            continue
 
-            # 1. Extract Text
-            raw_text = get_pdf_text(pdf_path)
-            # print(f"  Extracted {len(raw_text)} characters.")
+        if not raw_text.strip():
+            print(f"  - No text found in {filename}. Skipping.")
+            continue
+            
+        # Clean and split the text
+        cleaned_text = clean_text(raw_text)
+        chunks = text_splitter.split_text(cleaned_text)
+        print(f"  - Split into {len(chunks)} chunks.")
 
-            # 2. Clean Text (optional, but good practice)
-            cleaned_text = clean_text(raw_text)
-            # print(f"  Cleaned text length: {len(cleaned_text)} characters.")
+        # Prepare chunks, metadata, and IDs for this file
+        for i, chunk in enumerate(chunks):
+            chunk_id = f"{filename}_chunk_{i}"
+            all_chunks.append(chunk)
+            all_chunk_ids.append(chunk_id)
+            all_metadatas.append({"source": filename})
 
-            # 3. Chunk Text
-            chunks = text_splitter.split_text(cleaned_text)
-            print(f"  Split into {len(chunks)} chunks.")
+    # --- 6. Generate Embeddings and Add to ChromaDB (in a single batch) ---
+    if all_chunks:
+        print(f"\n🧠 Generating embeddings for {len(all_chunks)} total chunks...")
+        chunk_embeddings = embedding_model.encode(all_chunks, show_progress_bar=True)
+        print("  - Embeddings generated.")
 
-            if not chunks:
-                print(f"  No text chunks extracted from {filename}. Skipping.")
-                continue
-
-            # 4. Generate Embeddings for Chunks
-            print(f"  Generating embeddings for {len(chunks)} chunks...")
-            chunk_embeddings = embedding_model.encode(chunks, show_progress_bar=True)
-            print("  Embeddings generated.")
-
-            # 5. Store in ChromaDB
-            # Create unique IDs for each chunk
-            chunk_ids = [f"{filename}_chunk_{i}" for i in range(len(chunks))]
-
-            # Prepare metadata
-            metadatas = [{"source_document": filename, "chunk_id": chunk_id}
-                         for chunk_id, i in zip(chunk_ids, range(len(chunks)))]
-
-
-            # Add to collection (can take a few seconds for many chunks)
-            try:
-                collection.add(
-                    ids=chunk_ids,
-                    embeddings=chunk_embeddings.tolist(), # Convert numpy array to list
-                    documents=chunks, # The actual text content of the chunk
-                    metadatas=metadatas
-                )
-                print(f"  Successfully added {len(chunks)} chunks from {filename} to ChromaDB.")
-                total_chunks += len(chunks)
-            except Exception as e:
-                print(f"  Error adding chunks to ChromaDB for {filename}: {e}")
-
-            processed_files += 1
-
-    if processed_files == 0:
-        print("No PDF files found in the docs directory.")
+        # Add all data to the collection at once
+        try:
+            collection.add(
+                ids=all_chunk_ids,
+                embeddings=chunk_embeddings.tolist(),
+                documents=all_chunks,
+                metadatas=all_metadatas
+            )
+            print(f"✅ Successfully added {len(all_chunks)} chunks to ChromaDB.")
+        except Exception as e:
+            print(f"❌ Error adding chunks to ChromaDB: {e}")
     else:
-        print(f"\n--- Ingestion Complete ---")
-        print(f"Processed {processed_files} PDF files.")
-        print(f"Total chunks added to ChromaDB: {total_chunks}")
-        print(f"ChromaDB data stored in: {CHROMA_DATA_PATH}")
-        print(f"Collection count: {collection.count()}")
+        print("\nNo text chunks were generated from any documents.")
+
+    print("\n--- Ingestion Complete ---")
+    print(f"Total documents processed: {len(os.listdir(DOCS_DIR))}")
+    print(f"Total chunks in collection: {collection.count()}")
+    print(f"ChromaDB data stored in: {CHROMA_DATA_PATH}")
 
 if __name__ == "__main__":
     main()
