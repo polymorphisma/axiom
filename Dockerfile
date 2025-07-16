@@ -43,7 +43,7 @@ COPY ./chroma_data ./chroma_data
 # Consider .dockerignore for .env if you don't want it in the image,
 # but then you must provide env vars differently for local docker runs.
 # For simplicity in this step, we'll copy it, assuming it only has GROQ_API_KEY.
-COPY .env .
+# COPY .env .
 
 # 7. Expose Port (the port Uvicorn will run on *inside* the container)
 EXPOSE 8000
